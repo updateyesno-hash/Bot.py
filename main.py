@@ -25,7 +25,7 @@ COUNTRY_FLAGS = {
     45: "🇭🇷", 46: "🇸🇪", 47: "🇮🇶", 48: "🇳🇱", 49: "🇱🇻", 50: "🇦🇹", 51: "🇧🇾"
 }
 
-# Функция отправки API запросов
+# Функция запроса
 def send_api_request(endpoint, data=None):
     headers = {
         "Content-Type": "application/json",
@@ -35,14 +35,14 @@ def send_api_request(endpoint, data=None):
     response = requests.post(url, json=data or {}, headers=headers)
     return response.status_code, response.json()
 
-# Команда /start
+# Стартовое меню
 @dp.message(Command("start"))
 async def start(message: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Купить номер TG", callback_data="buy_tg")],
         [InlineKeyboardButton(text="🌍 Список стран", callback_data="list_countries")]
     ])
-    await message.answer("👋 Привет! Выберите действие:", reply_markup=kb)
+    await message.answer("👋 Бот GreedySMS запущен. Что делаем?", reply_markup=kb)
 
 # Список стран
 @dp.callback_query(F.data == "list_countries")
@@ -55,7 +55,7 @@ async def show_countries(callback: CallbackQuery):
             flag = COUNTRY_FLAGS.get(c['id'], "🏳️")
             text += f"{flag} {c['title']['rus']} (ID: {c['id']})\n"
         
-        # Отправляем частями, если список очень длинный
+        # Разбивка длинного текста
         if len(text) > 4096:
             await callback.message.answer(text[:4096])
             await callback.message.answer(text[4096:])
@@ -65,16 +65,20 @@ async def show_countries(callback: CallbackQuery):
         await callback.message.answer("❌ Ошибка при получении списка стран.")
     await callback.answer()
 
-# Покупка номера (пример для TG)
+# Покупка номера
 @dp.callback_query(F.data == "buy_tg")
 async def buy_number(callback: CallbackQuery):
-    # country=1 (Украина согласно твоему списку), service='tg'
+    # country=1 (Украина). Если номеров нет, меняй здесь ID на другой
     status, result = send_api_request("activations/getNumber", {"service": "tg", "country": 1})
     
-    if status == 200 and "activationId" in result:
-        await callback.message.answer(f"✅ Номер: {result['phone']}\n🆔 ID активации: {result['activationId']}")
+    if status == 200:
+        await callback.message.answer(f"✅ Номер получен:\n📞 {result['phone']}\n🆔 ID активации: {result['activationId']}")
+    elif status == 500 and result.get('message') == 'No numbers available':
+        await callback.message.answer("⚠️ Номера для этой страны закончились. Попробуйте другую страну.")
     else:
-        await callback.message.answer(f"❌ Ошибка: {result.get('message', 'Не удалось получить номер')}")
+        error_msg = result.get('message', 'Неизвестная ошибка')
+        await callback.message.answer(f"❌ Ошибка: {error_msg}")
+    
     await callback.answer()
 
 async def main():
@@ -82,3 +86,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
