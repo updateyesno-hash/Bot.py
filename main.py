@@ -7,22 +7,22 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 
 TOKEN = os.getenv("TOKEN")
 API_KEY = os.getenv("API_KEY")
-BASE_URL = "https://api.greedy-sms.com"
+
+# Используем тот же URL, что был в самом начале, но с правильным методом
+BASE_URL = "https://api.greedy-sms.com/stubs/handler_api.php"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-def send_api_request(endpoint, data=None):
-    # Добавляем ключ в само тело запроса, а не в заголовки
-    if data is None:
-        data = {}
-    data["apiKey"] = API_KEY  # ВОТ ЗДЕСЬ ИЗМЕНЕНИЕ
+# Функция отправки запроса через параметры
+def send_legacy_request(action, params=None):
+    if params is None:
+        params = {}
+    params["api_key"] = API_KEY
+    params["action"] = action
     
-    headers = {"Content-Type": "application/json"}
-    url = f"{BASE_URL}/{endpoint}"
-    
-    response = requests.post(url, json=data, headers=headers)
-    return response.status_code, response.json()
+    response = requests.get(BASE_URL, params=params)
+    return response.text
 
 @dp.message(Command("start"))
 async def start(message: Message):
@@ -30,28 +30,19 @@ async def start(message: Message):
         [InlineKeyboardButton(text="🛒 Купить номер TG", callback_data="buy_tg")],
         [InlineKeyboardButton(text="🌍 Список стран", callback_data="list_countries")]
     ])
-    await message.answer("Бот готов. Используем apiKey в теле запроса:", reply_markup=kb)
+    await message.answer("Бот запущен (Legacy API mode):", reply_markup=kb)
 
 @dp.callback_query(F.data == "list_countries")
 async def show_countries(callback: CallbackQuery):
-    status, result = send_api_request("activations/getCountries", {"page": 1, "pageSize": 50})
-    if status == 200 and "countries" in result:
-        text = "Доступные страны:\n"
-        for c in result["countries"]:
-            text += f"{c['id']} : {c['title']['rus']}\n"
-        await callback.message.answer(text[:4096])
-    else:
-        await callback.message.answer(f"Ошибка {status}: {result}")
+    resp = send_legacy_request("getCountries")
+    await callback.message.answer(f"Ответ от сервера:\n{resp}")
     await callback.answer()
 
 @dp.callback_query(F.data == "buy_tg")
 async def buy_number(callback: CallbackQuery):
     # country=1 (Россия), service='tg'
-    status, result = send_api_request("activations/getNumber", {"service": "tg", "country": 1})
-    if status == 200 and "activationId" in result:
-        await callback.message.answer(f"✅ Номер: {result['phone']}\nID: {result['activationId']}")
-    else:
-        await callback.message.answer(f"❌ Ошибка {status}: {result}")
+    resp = send_legacy_request("getNumber", {"service": "tg", "country": 1})
+    await callback.message.answer(f"Ответ от сервера:\n{resp}")
     await callback.answer()
 
 async def main():
