@@ -1,6 +1,8 @@
 import asyncio
 from aiogram import Bot, Dispatcher
 
+await bot.delete_webhook(drop_pending_updates=True)
+
 TOKEN = "8003400310:AAGdd-IG-h--X1P0RBqemUglElRj9QMSrI8"
 
 async def main():
