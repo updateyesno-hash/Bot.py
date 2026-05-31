@@ -27,45 +27,47 @@ def get_countries_from_api():
 
 def get_prices_map(service_name="tg"):
     headers = {"Content-Type": "application/json", "x-api-key": API_KEY}
-    # По документации для getPrices обязателен параметр service
     payload = {"service": service_name, "page": 1, "pageSize": 100}
-    
     try:
         response = requests.post(f"{BASE_URL}/activations/getPrices", json=payload, headers=headers)
-        print(f"DEBUG: Status {response.status_code}, Body: {response.text[:200]}")
-        
         prices_map = {}
         if response.status_code == 200:
             data = response.json()
             for item in data.get("countries", []):
-                country_id = item.get("country")
                 for s in item.get("services", []):
                     if s.get("name") == service_name:
-                        prices_map[country_id] = s.get("price", 0)
+                        prices_map[item["country"]] = s.get("price", 0)
         return prices_map
-    except Exception as e:
-        print(f"DEBUG: Error: {e}")
+    except Exception:
         return {}
 
 def get_countries_kb(page=1, search_query=None):
     all_countries = get_countries_from_api()
     prices_map = get_prices_map("tg")
     
+    # ФИЛЬТРАЦИЯ: оставляем только те страны, где есть цена
+    available_countries = []
+    for c in all_countries:
+        c_id = c['id']
+        price = prices_map.get(c_id, 0)
+        if price > 0: # Только если цена > 0
+            c['final_price'] = float(price) + MARKUP
+            available_countries.append(c)
+    
     if search_query:
-        all_countries = [c for c in all_countries if search_query.lower() in c['title']['rus'].lower()]
+        available_countries = [c for c in available_countries if search_query.lower() in c['title']['rus'].lower()]
     
     items_per_page = 8
-    total_pages = (len(all_countries) + items_per_page - 1) // items_per_page
+    total_pages = (len(available_countries) + items_per_page - 1) // items_per_page
     start = (page - 1) * items_per_page
-    page_countries = all_countries[start : start + items_per_page]
+    page_countries = available_countries[start : start + items_per_page]
     
     kb = []
     for c in page_countries:
         c_id = c['id']
-        raw_price = prices_map.get(c_id, 0)
-        final_price = float(raw_price) + MARKUP
-        button_text = f"{c['title']['rus']} — {final_price:.2f} ₽"
-        kb.append([InlineKeyboardButton(text=button_text, callback_data=f"buy_{c_id}_{final_price:.2f}")])
+        price = c['final_price']
+        button_text = f"{c['title']['rus']} — {price:.2f} ₽"
+        kb.append([InlineKeyboardButton(text=button_text, callback_data=f"buy_{c_id}_{price:.2f}")])
     
     nav = []
     if page > 1: nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"page_{page-1}"))
@@ -77,11 +79,11 @@ def get_countries_kb(page=1, search_query=None):
 @dp.message(Command("start"))
 async def start(message: Message):
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🌍 Список стран")]], resize_keyboard=True)
-    await message.answer("Привет! Выберите страну:", reply_markup=kb)
+    await message.answer("👋 Привет! Выберите страну для покупки:", reply_markup=kb)
 
 @dp.message(F.text == "🌍 Список стран")
 async def show_list(message: Message):
-    await message.answer("Список:", reply_markup=get_countries_kb())
+    await message.answer("🌍 Доступные страны:", reply_markup=get_countries_kb())
 
 @dp.callback_query(F.data.startswith("page_"))
 async def change_page(call: CallbackQuery):
@@ -92,18 +94,24 @@ async def change_page(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("buy_"))
 async def ask_confirm(call: CallbackQuery):
     _, c_id, price = call.data.split("_")
-    await call.message.answer(f"Цена: {price} ₽. Подтвердить?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Да", callback_data=f"confirm_{c_id}_{price}")]]))
+    await call.message.answer(f"💰 Цена: {price} ₽.\nПодтвердить?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Да, купить", callback_data=f"confirm_{c_id}_{price}")]]))
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("confirm_"))
+async def confirm_purchase(call: CallbackQuery):
+    _, c_id, price = call.data.split("_")
+    await call.message.answer(f"✅ Запрос на покупку принят! (ID {c_id}, Цена {price})")
     await call.answer()
 
 @dp.callback_query(F.data == "start_search")
 async def start_search(call: CallbackQuery, state: FSMContext):
     await state.set_state(SearchState.waiting_for_country)
-    await call.message.answer("Введите название:")
+    await call.message.answer("⌨️ Введите название страны:")
     await call.answer()
 
 @dp.message(SearchState.waiting_for_country)
 async def process_search(message: Message, state: FSMContext):
-    await message.answer("Результаты:", reply_markup=get_countries_kb(search_query=message.text))
+    await message.answer("🔎 Результаты поиска:", reply_markup=get_countries_kb(search_query=message.text))
     await state.clear()
 
 async def main():
