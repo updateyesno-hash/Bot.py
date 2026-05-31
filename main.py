@@ -8,7 +8,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# --- Настройки ---
 TOKEN = os.getenv("TOKEN")
 API_KEY = os.getenv("API_KEY")
 BASE_URL = "https://api.greedy-sms.com"
@@ -19,12 +18,6 @@ dp = Dispatcher(storage=MemoryStorage())
 
 class SearchState(StatesGroup):
     waiting_for_country = State()
-
-# --- Вспомогательная функция для флагов ---
-def get_flag(country_code):
-    # Преобразует код страны (например, 'ru') в эмодзи флага
-    country_code = country_code.upper()
-    return "".join([chr(127397 + ord(char)) for char in country_code])
 
 def get_countries_from_api():
     headers = {"Content-Type": "application/json", "x-api-key": API_KEY}
@@ -43,53 +36,85 @@ def get_prices_map(service_name="tg"):
                     if s.get("name") == service_name:
                         prices_map[item["country"]] = s.get("price", 0)
         return prices_map
-    except Exception:
+    except:
         return {}
 
 def get_countries_kb(page=1, search_query=None):
     all_countries = get_countries_from_api()
     prices_map = get_prices_map("tg")
     
-    available_countries = []
+    items = []
     for c in all_countries:
-        c_id = c['id']
-        price = prices_map.get(c_id, 0)
+        price = prices_map.get(c['id'], 0)
         if price > 0:
             c['final_price'] = float(price) + MARKUP
-            available_countries.append(c)
+            items.append(c)
     
     if search_query:
-        available_countries = [c for c in available_countries if search_query.lower() in c['title']['rus'].lower()]
+        items = [c for c in items if search_query.lower() in c['title']['rus'].lower()]
     
-    items_per_page = 8
-    total_pages = (len(available_countries) + items_per_page - 1) // items_per_page
-    if total_pages == 0: total_pages = 1
-    
-    start = (page - 1) * items_per_page
-    page_countries = available_countries[start : start + items_per_page]
+    per_page = 8
+    total_pages = max(1, (len(items) + per_page - 1) // per_page)
+    start = (page - 1) * per_page
+    page_items = items[start : start + per_page]
     
     kb = []
-    for c in page_countries:
-        c_id = c['id']
-        # Предполагаем, что в API приходит eng код, если нет - используем '??'
-        flag = get_flag(c.get('iso', '??')) 
-        price = c['final_price']
-        button_text = f"{flag} {c['title']['rus']} — {price:.2f} ₽"
-        kb.append([InlineKeyboardButton(text=button_text, callback_data=f"buy_{c_id}_{price:.2f}")])
+    for c in page_items:
+        button_text = f"🌐 {c['title']['rus']} — {c['final_price']:.2f} ₽"
+        kb.append([InlineKeyboardButton(text=button_text, callback_data=f"buy_{c['id']}_{c['final_price']:.2f}")])
     
-    # Навигация + Счетчик
     nav = []
     if page > 1: nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"page_{page-1}"))
-    nav.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="ignore"))
+    # Кнопка с номером страницы без команды
+    nav.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="none"))
     if page < total_pages: nav.append(InlineKeyboardButton(text="➡️", callback_data=f"page_{page+1}"))
-    kb.append(nav)
     
+    if nav: kb.append(nav)
     kb.append([InlineKeyboardButton(text="🔎 Поиск", callback_data="start_search")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-# --- Обработчики (остались прежними, кроме callback для счетчика) ---
-@dp.callback_query(F.data == "ignore")
-async def ignore(call: CallbackQuery):
+# --- Обработчики ---
+@dp.message(Command("start"))
+async def start(message: Message, state: FSMContext):
+    await state.clear()
+    kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🌍 Список стран")]], resize_keyboard=True)
+    await message.answer("Привет! Выбери страну:", reply_markup=kb)
+
+@dp.message(F.text == "🌍 Список стран")
+async def show_list(message: Message):
+    await message.answer("Доступные страны:", reply_markup=get_countries_kb(1))
+
+@dp.callback_query(F.data.startswith("page_"))
+async def change_page(call: CallbackQuery):
+    page = int(call.data.split("_")[1])
+    await call.message.edit_reply_markup(reply_markup=get_countries_kb(page))
     await call.answer()
 
-# ... (Остальные функции: start, show_list, change_page, buy, confirm, search - без изменений)
+@dp.callback_query(F.data == "none")
+async def none_handler(call: CallbackQuery):
+    # Просто закрываем уведомление о нажатии, чтобы не было "песочных часов"
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("buy_"))
+async def buy(call: CallbackQuery):
+    _, c_id, price = call.data.split("_")
+    await call.message.answer(f"Покупаем за {price} ₽?")
+    await call.answer()
+
+@dp.callback_query(F.data == "start_search")
+async def start_search(call: CallbackQuery, state: FSMContext):
+    await state.set_state(SearchState.waiting_for_country)
+    await call.message.answer("Введите название:")
+    await call.answer()
+
+@dp.message(SearchState.waiting_for_country)
+async def process_search(message: Message, state: FSMContext):
+    await message.answer("Результаты:", reply_markup=get_countries_kb(1, message.text))
+    await state.clear()
+
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+    
