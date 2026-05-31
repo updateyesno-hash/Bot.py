@@ -17,9 +17,11 @@ MARKUP = 25.0  # Твоя наценка
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# --- Состояния ---
 class SearchState(StatesGroup):
     waiting_for_country = State()
 
+# --- API Функции ---
 def get_countries_from_api():
     headers = {"Content-Type": "application/json", "x-api-key": API_KEY}
     response = requests.post(f"{BASE_URL}/activations/getCountries", json={"page": 1, "pageSize": 100}, headers=headers)
@@ -27,23 +29,23 @@ def get_countries_from_api():
 
 def get_prices_map(service_name="tg"):
     headers = {"Content-Type": "application/json", "x-api-key": API_KEY}
-    # Запрашиваем цены через getPrices как указано в документации
     response = requests.post(f"{BASE_URL}/activations/getPrices", json={"service": service_name}, headers=headers)
     prices_map = {}
     if response.status_code == 200:
         data = response.json()
         for item in data.get("countries", []):
-            country_id = item.get("country")
-            # Проходим по списку сервисов, чтобы найти нужный
+            # Отладочная строка для логов
+            print(f"DEBUG: Services for country {item.get('country')}: {item.get('services')}")
+            
             for s in item.get("services", []):
                 if s.get("name") == service_name:
-                    prices_map[country_id] = s.get("price", 0)
+                    prices_map[item["country"]] = s.get("price", 0)
     return prices_map
 
+# --- Клавиатура ---
 def get_countries_kb(page=1, search_query=None):
     all_countries = get_countries_from_api()
-    # Если цены не подтягиваются, попробуй сменить "tg" на "telegram"
-    prices_map = get_prices_map("tg") 
+    prices_map = get_prices_map("tg")
     
     if search_query:
         all_countries = [c for c in all_countries if search_query.lower() in c['title']['rus'].lower()]
@@ -70,14 +72,15 @@ def get_countries_kb(page=1, search_query=None):
     kb.append([InlineKeyboardButton(text="🔎 Поиск страны", callback_data="start_search")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
+# --- Обработчики ---
 @dp.message(Command("start"))
 async def start(message: Message):
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🌍 Список стран")]], resize_keyboard=True)
-    await message.answer("Добро пожаловать!", reply_markup=kb)
+    await message.answer("👋 Добро пожаловать!", reply_markup=kb)
 
 @dp.message(F.text == "🌍 Список стран")
 async def show_list(message: Message):
-    await message.answer("🌍 Список стран:", reply_markup=get_countries_kb(page=1))
+    await message.answer("🌍 Выберите страну:", reply_markup=get_countries_kb(page=1))
 
 @dp.callback_query(F.data.startswith("page_"))
 async def change_page(call: CallbackQuery):
