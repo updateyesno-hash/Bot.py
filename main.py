@@ -3,7 +3,7 @@ import requests
 import asyncio
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -20,14 +20,11 @@ dp = Dispatcher(storage=MemoryStorage())
 class SearchState(StatesGroup):
     waiting_for_country = State()
 
-# --- Главное меню (нижняя панель) ---
-def get_main_kb():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="🌍 Купить номер"), KeyboardButton(text="👤 Профиль")],
-        [KeyboardButton(text="💰 Пополнить"), KeyboardButton(text="❓ Помощь")]
-    ], resize_keyboard=True)
+# --- Вспомогательные функции ---
+def get_flag(country_code):
+    country_code = country_code.upper()
+    return "".join([chr(127397 + ord(char)) for char in country_code])
 
-# --- Логика API (остается без изменений) ---
 def get_countries_from_api():
     headers = {"Content-Type": "application/json", "x-api-key": API_KEY}
     response = requests.post(f"{BASE_URL}/activations/getCountries", json={"page": 1, "pageSize": 100}, headers=headers)
@@ -48,7 +45,6 @@ def get_prices_map(service_name="tg"):
     except:
         return {}
 
-# --- Генератор inline-клавиатуры для списка стран ---
 def get_countries_kb(page=1, search_query=None):
     all_countries = get_countries_from_api()
     prices_map = get_prices_map("tg")
@@ -70,37 +66,58 @@ def get_countries_kb(page=1, search_query=None):
     
     kb = []
     for c in page_items:
-        kb.append([InlineKeyboardButton(text=f"🌐 {c['title']['rus']} — {c['final_price']:.2f} ₽", callback_data=f"buy_{c['id']}_{c['final_price']:.2f}")])
+        flag = get_flag(c.get('iso', 'xx'))
+        text = f"{flag} {c['title']['rus']} — {c['final_price']:.2f} ₽"
+        kb.append([InlineKeyboardButton(text=text, callback_data=f"buy_{c['id']}_{c['final_price']:.2f}")])
     
     nav = []
     if page > 1: nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"page_{page-1}"))
     nav.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="none"))
     if page < total_pages: nav.append(InlineKeyboardButton(text="➡️", callback_data=f"page_{page+1}"))
-    
     if nav: kb.append(nav)
+    
     kb.append([InlineKeyboardButton(text="🔎 Поиск", callback_data="start_search")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 # --- Обработчики меню ---
 @dp.message(Command("start"))
-async def start(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("👋 Привет! Я готов к работе. Выберите пункт меню ниже:", reply_markup=get_main_kb())
+async def start(message: Message):
+    kb = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="🌍 Купить номер"), KeyboardButton(text="👤 Профиль")]
+    ], resize_keyboard=True)
+    await message.answer("👋 Добро пожаловать!", reply_markup=kb)
 
 @dp.message(F.text == "🌍 Купить номер")
 async def show_list(message: Message):
-    await message.answer("Выберите страну из списка:", reply_markup=get_countries_kb(1))
+    await message.answer("Выберите страну:", reply_markup=get_countries_kb(1))
 
-@dp.message(F.text == "👤 Профиль")
-async def show_profile(message: Message):
-    await message.answer("👤 **Ваш профиль**\n\n🆔 ID: 123456\n💰 Баланс: 0 ₽\n🛒 Покупок: 0", parse_mode="Markdown")
+# --- Callback-обработчики ---
+@dp.callback_query(F.data.startswith("page_"))
+async def change_page(call: CallbackQuery):
+    page = int(call.data.split("_")[1])
+    await call.message.edit_reply_markup(reply_markup=get_countries_kb(page))
+    await call.answer()
 
-@dp.message(F.text == "💰 Пополнить")
-async def top_up(message: Message):
-    await message.answer("💳 Для пополнения баланса переведите средства по реквизитам:\n\n`...тут будут реквизиты...`", parse_mode="Markdown")
+@dp.callback_query(F.data.startswith("buy_"))
+async def buy(call: CallbackQuery):
+    _, c_id, price = call.data.split("_")
+    await call.message.answer(f"✅ Вы выбрали страну ID {c_id}. Цена: {price} ₽. Подтвердить?")
+    await call.answer()
 
-# --- Обработка поиска и покупок (остается без изменений) ---
-# (пагинация, покупка, поиск — см. предыдущий код)
+@dp.callback_query(F.data == "start_search")
+async def start_search(call: CallbackQuery, state: FSMContext):
+    await state.set_state(SearchState.waiting_for_country)
+    await call.message.answer("⌨️ Введите название:")
+    await call.answer()
+
+@dp.message(SearchState.waiting_for_country)
+async def process_search(message: Message, state: FSMContext):
+    await message.answer("🔎 Результаты:", reply_markup=get_countries_kb(1, message.text))
+    await state.clear()
+
+@dp.callback_query(F.data == "none")
+async def none(call: CallbackQuery):
+    await call.answer()
 
 async def main():
     await dp.start_polling(bot)
