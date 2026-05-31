@@ -4,17 +4,23 @@ import asyncio
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 
+# Настройки
 TOKEN = os.getenv("TOKEN")
 API_KEY = os.getenv("API_KEY")
 BASE_URL = "https://api.greedy-sms.com"
 
 bot = Bot(token=TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 
-# Хранилище: {user_id: {"activation_id": ..., "status": ...}}
-user_activations = {}
+# Состояние для режима поиска
+class SearchState(StatesGroup):
+    waiting_for_country = State()
 
+# Запрос к API
 def send_api_request(endpoint, data=None):
     headers = {"Content-Type": "application/json", "x-api-key": API_KEY}
     response = requests.post(f"{BASE_URL}/{endpoint}", json=data or {}, headers=headers)
@@ -24,83 +30,69 @@ def send_api_request(endpoint, data=None):
 def get_main_kb():
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="🛒 Купить номер"), KeyboardButton(text="💰 Баланс")],
-        [KeyboardButton(text="🌍 Список стран")]
+        [KeyboardButton(text="🔎 Найти страну")]
     ], resize_keyboard=True)
 
-# Клавиатура подтверждения покупки
-def confirm_kb(country_id):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Подтвердить покупку", callback_data=f"confirm_{country_id}")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_buy")]
-    ])
+async def get_countries_keyboard(search_query):
+    status, result = send_api_request("activations/getCountries", {"page": 1, "pageSize": 100})
+    if status != 200: return None
+    countries = [c for c in result.get("countries", []) if search_query.lower() in c['title']['rus'].lower()]
+    
+    # Показываем первые 10 результатов поиска
+    buttons = [[InlineKeyboardButton(text=c['title']['rus'], callback_data=f"buy_{c['id']}")] for c in countries[:10]]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # --- ОБРАБОТЧИКИ ---
-
-@dp.message(F.text == "🛒 Купить номер")
-async def show_countries(message: Message):
-    await message.answer("Напиши название страны, чтобы найти её:")
+@dp.message(Command("start"))
+async def start(message: Message):
+    await message.answer("👋 Привет! Используй кнопки в меню:", reply_markup=get_main_kb())
 
 @dp.message(F.text == "💰 Баланс")
 async def check_balance(message: Message):
     status, result = send_api_request("users/getBalance")
-    await message.answer(f"💵 Баланс: {result.get('balance', '0')} руб." if status == 200 else "Ошибка.")
+    await message.answer(f"💵 Баланс: {result.get('balance', '0')} руб." if status == 200 else "❌ Ошибка баланса.")
 
-@dp.message()
-async def search_and_buy(message: Message):
-    # Поиск страны
-    status, result = send_api_request("activations/getCountries", {"page": 1, "pageSize": 100})
-    countries = [c for c in result.get("countries", []) if message.text.lower() in c['title']['rus'].lower()]
-    
-    if not countries:
-        await message.answer("❌ Страна не найдена.")
-        return
+@dp.message(F.text == "🔎 Найти страну")
+async def start_search(message: Message, state: FSMContext):
+    await state.set_state(SearchState.waiting_for_country)
+    await message.answer("Введите название страны:")
 
-    c = countries[0]
-    await message.answer(f"Вы выбрали: {c['title']['rus']}.\nПодтверждаете покупку?", reply_markup=confirm_kb(c['id']))
+@dp.message(SearchState.waiting_for_country)
+async def process_search(message: Message, state: FSMContext):
+    kb = await get_countries_keyboard(message.text)
+    if not kb or not kb.inline_keyboard:
+        await message.answer("❌ Ничего не найдено.")
+    else:
+        await message.answer(f"Результаты для '{message.text}':", reply_markup=kb)
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("buy_"))
+async def ask_confirm(callback: CallbackQuery):
+    country_id = callback.data.split("_")[1]
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirm_{country_id}")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_buy")]
+    ])
+    await callback.message.answer(f"Подтверждаете покупку номера (ID страны: {country_id})?", reply_markup=kb)
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("confirm_"))
 async def confirm_purchase(callback: CallbackQuery):
-    country_id = callback.data.split("_")[1]
-    status, result = send_api_request("activations/getNumber", {"service": "tg", "country": int(country_id), "operator": "any"})
+    country_id = int(callback.data.split("_")[1])
+    status, result = send_api_request("activations/getNumber", {"service": "tg", "country": country_id, "operator": "any"})
     
     if status == 200:
-        act_id = result['activationId']
-        user_activations[callback.from_user.id] = {"act_id": act_id, "status": "pending"}
-        await callback.message.answer(f"✅ Номер: {result['phone']}\n🆔 ID: {act_id}\n\nОжидаю SMS...\nИспользуй /check для проверки.")
+        await callback.message.answer(f"✅ Номер: {result['phone']}\n🆔 ID: {result['activationId']}")
+    elif status == 500:
+        await callback.message.answer("⚠️ Нет свободных номеров.")
     else:
-        await callback.message.answer("❌ Ошибка покупки.")
+        await callback.message.answer("❌ Ошибка при покупке.")
     await callback.answer()
 
-@dp.message(Command("check"))
-async def check_sms(message: Message):
-    user_id = message.from_user.id
-    if user_id not in user_activations:
-        return await message.answer("У вас нет активных заказов.")
-    
-    act_id = user_activations[user_id]["act_id"]
-    status, result = send_api_request("activations/getStatus", {"activationId": act_id})
-    
-    # Если статус 'received' или 'success' - код пришел
-    if result.get("status") in ["received", "success"]:
-        user_activations[user_id]["status"] = "received"
-        await message.answer(f"📩 Код: {result.get('sms')}")
-    else:
-        await message.answer("⏳ Код еще не пришел.")
-
-@dp.message(Command("cancel"))
-async def cancel_order(message: Message):
-    user_id = message.from_user.id
-    if user_id not in user_activations:
-        return await message.answer("Нет активных заказов.")
-    
-    # ЛОГИКА: если код пришел, отмена запрещена
-    if user_activations[user_id]["status"] == "received":
-        await message.answer("⛔ Отмена невозможна: код уже получен!")
-    else:
-        act_id = user_activations[user_id]["act_id"]
-        send_api_request("activations/setStatus", {"activationId": act_id, "status": "cancel"})
-        del user_activations[user_id]
-        await message.answer("✅ Заказ отменен.")
+@dp.callback_query(F.data == "cancel_buy")
+async def cancel_buy(callback: CallbackQuery):
+    await callback.message.answer("❌ Покупка отменена.")
+    await callback.answer()
 
 async def main():
     await dp.start_polling(bot)
