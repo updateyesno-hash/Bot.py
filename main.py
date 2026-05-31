@@ -40,6 +40,7 @@ def get_prices():
             for s in i.get("services", []):
                 if s.get("name") == "tg": m[i["country"]] = s.get("price", 0)
     return m
+    
     def get_kb(page=1, sort=False, query=None):
     items = []
     prices = get_prices()
