@@ -1,59 +1,60 @@
 import os
 import sqlite3
+import asyncio
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 
-# --- Состояния ---
+# 1. Настройки и инициализация
+TOKEN = os.getenv("TOKEN")
+bot = Bot(token=TOKEN)
+# СНАЧАЛА создаем Dispatcher
+dp = Dispatcher(storage=MemoryStorage())
+
+# 2. Состояния (FSM)
 class ShopStates(StatesGroup):
     searching = State()
 
-# --- Главное меню ---
+# 3. Клавиатуры
 def get_main_kb():
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="🛒 Купить"), KeyboardButton(text="🌍 Список стран")],
         [KeyboardButton(text="👤 Профиль")]
     ], resize_keyboard=True)
 
-# --- 1. ПРОФИЛЬ ---
+# 4. ОБРАБОТЧИКИ (теперь 'dp' существует, ошибок не будет)
+
+@dp.message(Command("start"))
+async def start(message: Message):
+    await message.answer("Добро пожаловать!", reply_markup=get_main_kb())
+
 @dp.message(F.text == "👤 Профиль")
 async def profile_menu(message: Message):
-    # В реальном проекте здесь будет запрос к БД за данными
-    balance = "0.29 ₽"
-    await message.answer(
-        f"👤 Личный профиль\n\n🆔 ID: {message.from_user.id}\n💰 Баланс: {balance}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💰 Пополнить", callback_data="top_up")],
-            [InlineKeyboardButton(text="📜 История покупок", callback_data="history")]
-        ])
-    )
+    await message.answer("👤 Личный профиль\n💰 Баланс: 0.29 ₽")
 
-# --- 2. ВЫБОР СТРАН И ПОИСК ---
 @dp.message(F.text == "🌍 Список стран")
 async def countries_menu(message: Message):
-    await message.answer(
-        "🌍 Выберите страну из списка или нажмите поиск:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔍 Начать поиск", callback_data="start_search")],
-            [InlineKeyboardButton(text="📋 Список A-Z", callback_data="list_all")]
-        ])
-    )
+    await message.answer("Выберите действие:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔍 Начать поиск", callback_data="start_search")]
+    ]))
 
 @dp.callback_query(F.data == "start_search")
 async def request_search(call: CallbackQuery, state: FSMContext):
     await state.set_state(ShopStates.searching)
-    await call.message.answer("⌨️ Введите название страны для поиска:")
+    await call.message.answer("⌨️ Введите название страны:")
 
 @dp.message(ShopStates.searching)
 async def perform_search(message: Message, state: FSMContext):
-    # Здесь логика фильтрации списка стран по message.text
-    search_query = message.text
-    await message.answer(f"🔎 Результаты поиска для: {search_query}")
-    await state.clear() # Выходим из состояния поиска
+    await message.answer(f"🔎 Ищем: {message.text}")
+    await state.clear()
 
-# --- 3. ПОКУПКА ---
-@dp.message(F.text == "🛒 Купить")
-async def buy_menu(message: Message):
-    await message.answer("Выберите сервис:") # Тут список кнопок сервисов
+# 5. Запуск
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+    
