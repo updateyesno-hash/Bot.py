@@ -42,13 +42,13 @@ def get_prices():
     return m
     
     def get_kb(page=1, sort=False, query=None):
-    items = []
-    prices = get_prices()
-    for c in get_countries():
-        p = prices.get(c['id'], 0)
-        if p > 0:
-            c['fp'] = float(p) + MARKUP
-            items.append(c)
+         items = []
+         prices = get_prices()
+         for c in get_countries():
+             p = prices.get(c['id'], 0)
+             if p > 0:
+               c['fp'] = float(p) + MARKUP
+               items.append(c)
     if query: items = [c for c in items if query.lower() in c['title']['rus'].lower()]
     if sort: items.sort(key=lambda x: x['fp'])
     
