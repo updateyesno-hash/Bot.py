@@ -2,3 +2,4 @@ aiogram
 requests
 aiosqlite
 aiocryptopay
+aiohttp
